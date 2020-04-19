@@ -39,12 +39,15 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaRecorder;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.support.annotation.NonNull;
 import android.support.v13.app.FragmentCompat;
 import android.support.v4.app.ActivityCompat;
 import android.util.Log;
+import android.util.Range;
+import android.util.Rational;
 import android.util.Size;
 import android.util.SparseIntArray;
 import android.view.LayoutInflater;
@@ -183,6 +186,13 @@ public class Camera2VideoFragment extends Fragment
      */
     private Semaphore mCameraOpenCloseLock = new Semaphore(1);
 
+    // info for exposure compensation.
+    private Range<Integer> AEcompensationRange;
+    private Rational AEstepCompensation;
+    private int AEvalue = 0;
+    private Button mButtounUpAE;
+    private Button mButtounDownAE;
+
     /**
      * {@link CameraDevice.StateCallback} is called when {@link CameraDevice} changes its status.
      */
@@ -299,6 +309,10 @@ public class Camera2VideoFragment extends Fragment
         mTextureView = (AutoFitTextureView) view.findViewById(R.id.texture);
         mButtonVideo = (ImageButton) view.findViewById(R.id.video);
         mButtonVideo.setOnClickListener(this);
+        mButtounUpAE = view.findViewById(R.id.AE_up);
+        mButtounUpAE.setOnClickListener(this);
+        mButtounDownAE = view.findViewById(R.id.AE_down);
+        mButtounDownAE.setOnClickListener(this);
     }
 
     @Override
@@ -322,16 +336,53 @@ public class Camera2VideoFragment extends Fragment
     @Override
     public void onClick(View view) {
         switch (view.getId()) {
-            case R.id.video: {
+            case R.id.video:
                 if (mIsRecordingVideo) {
                     stopRecordingVideo();
                 } else {
                     startRecordingVideo();
                 }
                 break;
-            }
+
+            case R.id.AE_up:
+                Log.d(TAG, "onClick: Set exposure");
+                try {
+                    if (AEvalue < AEcompensationRange.getUpper()){
+                        mPreviewBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ++AEvalue);
+                        mPreviewSession.setRepeatingRequest(mPreviewBuilder.build(), null, mBackgroundHandler);
+
+                        if (AEvalue == AEcompensationRange.getUpper()){
+                            mButtounUpAE.setEnabled(false);
+                        }
+                        mButtounDownAE.setEnabled(true);
+                    }
+
+                } catch (CameraAccessException e) {
+                    e.printStackTrace();
+                }
+                break;
+
+            case R.id.AE_down:
+                Log.d(TAG, "onClick: Set exposure");
+                try {
+                    if (AEvalue > AEcompensationRange.getLower()){
+                        mPreviewBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, --AEvalue);
+                        mPreviewSession.setRepeatingRequest(mPreviewBuilder.build(), null, mBackgroundHandler);
+
+                        if (AEvalue == AEcompensationRange.getLower()){
+                            mButtounDownAE.setEnabled(false);
+                        }
+                        mButtounUpAE.setEnabled(true);
+                    }
+
+                } catch (CameraAccessException e) {
+                    e.printStackTrace();
+                }
+                break;
         }
     }
+
+
 
     /**
      * Starts a background thread and its {@link Handler}.
@@ -435,8 +486,16 @@ public class Camera2VideoFragment extends Fragment
             }
             String cameraId = manager.getCameraIdList()[0];
 
-            // Choose the sizes for camera preview and video recording
+            // Get camera characteristics
             CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
+
+            // Get AE compensation properties from camera characteristics
+            AEcompensationRange = characteristics.get (CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+            Log.d(TAG, "openCamera: Camera range" + AEcompensationRange);
+            AEstepCompensation = characteristics.get (CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+            Log.d(TAG, "openCamera: compensation step " + AEstepCompensation);
+
+            // Choose the sizes for camera preview and video recording from camera characteristics
             StreamConfigurationMap map = characteristics
                     .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             mSensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
@@ -504,6 +563,8 @@ public class Camera2VideoFragment extends Fragment
 
             Surface previewSurface = new Surface(texture);
             mPreviewBuilder.addTarget(previewSurface);
+
+            Log.d(TAG, "startPreview: Paso por aquí");
 
             mCameraDevice.createCaptureSession(Collections.singletonList(previewSurface),
                     new CameraCaptureSession.StateCallback() {
@@ -589,6 +650,7 @@ public class Camera2VideoFragment extends Fragment
         mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
         if (mNextVideoAbsolutePath == null || mNextVideoAbsolutePath.isEmpty()) {
             mNextVideoAbsolutePath = getVideoFilePath(getActivity());
+            Log.d(TAG, "setUpMediaRecorder: File = " + mNextVideoAbsolutePath);
         }
         mMediaRecorder.setOutputFile(mNextVideoAbsolutePath);
         mMediaRecorder.setVideoEncodingBitRate(10000000);
@@ -609,8 +671,14 @@ public class Camera2VideoFragment extends Fragment
     }
 
     private String getVideoFilePath(Context context) {
-        final File dir = context.getExternalFilesDir(null);
-        return (dir == null ? "" : (dir.getAbsolutePath() + "/"))
+        final String root = Environment.getExternalStorageDirectory().getAbsolutePath();
+
+        File myDir = new File(root + "/saved_images");
+        if (!myDir.exists()) {
+            myDir.mkdirs();
+        }
+
+        return (myDir == null ? "" : (myDir.getAbsolutePath() + "/"))
                 + System.currentTimeMillis() + ".mp4";
     }
 
@@ -645,6 +713,7 @@ public class Camera2VideoFragment extends Fragment
                 public void onConfigured(@NonNull CameraCaptureSession cameraCaptureSession) {
                     mPreviewSession = cameraCaptureSession;
                     updatePreview();
+
                     getActivity().runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
